@@ -56,9 +56,6 @@ public:
 		// Attach the client_input on the message continuation chain.
 		this->init(ACE_DEFAULT_MAX_SOCKET_BUFSIZ);
 		this->copy(client_input->rd_ptr(), client_input->length());
-
-		client_input->release();
-
 	}
 
 	// Accessor for the service handler pointer.
@@ -72,6 +69,7 @@ public:
 #define T_LENGTH 32
 	virtual int execute (void)
 	{
+		ACE_Message_Block *echo_cmd_next;
 		ACE_DEBUG((LM_DEBUG, "Echo_Command::execute\n"));
 		char thread_id[T_LENGTH];
 
@@ -82,8 +80,6 @@ public:
 		this->svc_handler_->peer().send(thread_id, ACE_OS::strlen(thread_id));
 
 		this->svc_handler_->peer().send(this->rd_ptr(), this->length());
-
-		//this->release();
 
 		return 0;
 	}
@@ -140,15 +136,26 @@ public:
 	{
 		ACE_DEBUG((LM_DEBUG, "Echo_Task::svc is running\n"));
 		// Block until there is a message available on the queue.
-		for (ACE_Message_Block *message_block; getq (message_block) != -1;)
+		//for (ACE_Message_Block *message_block; getq (message_block) != -1;)
+
+		/* Remember that get() needs a reference to a pointer.  To save
+		    stack thrashing we'll go ahead and create a pointer outside of the
+		    almost- infinite loop.
+		*/
+		ACE_Message_Block *message_block;
+		while(1)
 		{
+			getq (message_block);
 			// Get and execute the echo_command to echo the data back to
 			// the client
 			ACE_DEBUG((LM_DEBUG, "Echo_Task::svc: thread %ul is waiting for messages\n", ACE_OS::thr_self()));
 			Echo_Command<ACE_SOCK_Stream> *echo_command =
 					reinterpret_cast<Echo_Command<ACE_SOCK_Stream> *>( message_block );
 
+			ACE_DEBUG((LM_DEBUG, "Echo_Task::svc: message: %s processed\n", message_block->rd_ptr()));
 			echo_command->execute();
+
+			ACE_Message_Block::release (message_block);
 		}
 		return 0;
 	}
@@ -292,10 +299,13 @@ public:
 	{
 		ACE_DEBUG((LM_DEBUG, "Echo_Svc_Handler::recv_client_input is running\n"));
 
-		if (! recv_message())
+		for(;;)
 		{
-   	        client_input_state_ = MUST_PROCESS_FRAGMENT_DATA;
-   	        return process_input();
+			if (! recv_message() )
+			{
+				client_input_state_ = MUST_PROCESS_FRAGMENT_DATA;
+				process_input();
+			}
 		}
 
 	    return 0;
@@ -336,7 +346,7 @@ public:
 	            "(%P|%t) %p bad read\n",
 	            "client logger"),
 	            -1);
-	        break;
+	        return -1;
 
 	    case 0:
 	    // EOF, i.e., the peer closed the connection.
@@ -344,7 +354,8 @@ public:
 	            "(%P|%t) closing log daemon (fd = %d)\n",
 	            this->get_handle()),
 	            -1);
-	        break;
+	        //this->handle_close();
+	        return -1;
 	    default:
    			buf[recv_cnt] = 0;
    	        ACE_DEBUG((LM_DEBUG,
@@ -355,6 +366,7 @@ public:
    			if (current_fragment_ == 0)
    				ACE_NEW_RETURN (current_fragment_, ACE_Message_Block (ACE_DEFAULT_MAX_SOCKET_BUFSIZ), -1);
 
+   			current_fragment_->reset();
    			current_fragment_->copy(buf, recv_cnt);
 	    }
 
