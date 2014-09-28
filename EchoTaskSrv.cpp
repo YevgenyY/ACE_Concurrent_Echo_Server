@@ -69,11 +69,21 @@ public:
 
 	// When an Echo_Command is executed it echoes the data back to the
 	// client after first prepending the thread id.
+#define T_LENGTH 32
 	virtual int execute (void)
 	{
 		ACE_DEBUG((LM_DEBUG, "Echo_Command::execute\n"));
-		//send_cnt = this->peer().send(buf, recv_cnt);
+		char thread_id[T_LENGTH];
+
+		ACE_OS::memset(thread_id, 0, T_LENGTH);
+		ACE_OS::sprintf(thread_id, "Thread id %lu: ", ACE_OS::thr_self());
+
+		// Echo thread id back to the client
+		this->svc_handler_->peer().send(thread_id, ACE_OS::strlen(thread_id));
+
 		this->svc_handler_->peer().send(this->rd_ptr(), this->length());
+
+		//this->release();
 
 		return 0;
 	}
@@ -139,7 +149,6 @@ public:
 					reinterpret_cast<Echo_Command<ACE_SOCK_Stream> *>( message_block );
 
 			echo_command->execute();
-
 		}
 		return 0;
 	}
