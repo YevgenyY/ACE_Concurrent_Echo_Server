@@ -1,6 +1,6 @@
 /*
  * To make the executable, please use:
- * $ c++ Program.cpp -I$ACE_ROOT -L$ACE_ROOT -lACE
+ * $ c++ Program.cpp -I$ACE_ROOT -L$ACE_ROOT -lACE -lpthread
  *
  * $ACE_ROOT should point your ACE root directory
  *
@@ -28,8 +28,6 @@
 #include "ace/Svc_Handler.h"
 
 #include <string.h>
-
-//typedef ACE_SOCK_Stream PEER_STREAM;
 
 // Set the port number here
 static const u_short ECHO_SERVER_PORT = ACE_DEFAULT_SERVER_PORT;
@@ -106,6 +104,8 @@ public:
 		// Set the high water_mark, which limits the amount of data
 		// that will be used to buffer client input pending successfully
 		// echoing back to the client.
+		ACE_OS::printf("Echo_Task::open\n");
+
 		msg_queue ()-> high_water_mark (HIGH_WATER_MARK);
 
 		// Activate the task to run a thread pool.
@@ -188,10 +188,22 @@ public:
 		// Schedule a timeout to guard against clients that connect by
 		// don't send data
 
-		// ...
+		ACE_OS::printf("Echo_Svc_Handler::open schedule timer\n");
+
+		if (this->reactor()->schedule_timer (this,
+											0,
+											ACE_Time_Value (TIMEOUT_SECS)) == -1)
+					ACE_ERROR_RETURN ((LM_ERROR,
+								       ACE_TEXT ("(%P|%t) schedule timer failed\n")),
+								       -1);
 
 		// Forward to the parent class's open() method, which registers
-		// this service handler for reactive dispatchwhen data arrives.
+		// this service handler for reactive dispatch when data arrives.
+		if ( this->reactor ()->register_handler (this, ACE_Event_Handler::READ_MASK) == -1)
+			ACE_ERROR_RETURN((LM_ERROR,
+					          "(%P|%t) can't register with reactor\n"),
+							  -1);
+
 		return 0;
 	}
 
@@ -203,18 +215,23 @@ public:
 			ACE_ERROR((LM_ERROR,
 			           ACE_TEXT ("(%P|%t) cancel_timer failed\n")));
 
+		ACE_OS::printf("Echo_Svc_Handler::handle_close: close down the event handler\n");
+
 		return ACE_Svc_Handler <ACE_SOCK_Stream, ACE_NULL_SYNCH>::handle_close (h,m);
 
 	}
 
-	// This hook method is used to shutdown the servicehandler if the
+	// This hook method is used to shutdown the service handler if the
 	// client doesn't send data for several seconds.
 	virtual int handle_timeout (ACE_Time_Value const &,
 	                            void const*)
 	{
 		// Instruct the reactor to remove this service handler and shut it
 		// down
+		ACE_OS::printf("Echo_Svc_Handler::handle_timeout: remove the service handler and shut it\n");
+
 		this->reactor () -> remove_handler (this, ACE_Event_Handler::READ_MASK);
+
 		return 0;
 	}
 
@@ -233,20 +250,31 @@ public:
 		{
 			case WAIT_TO_RECV_MORE_CLIENT_INPUT:
 				// Receive input from the client and process it.
+				ACE_DEBUG((LM_DEBUG, "Echo_Svc_Handler::handle_input: WAIT_TO_RECV_MORE_CLIENT_INPUT\n"));
 				return recv_client_input ();
 
 			case MUST_PROCESS_FRAGMENT_DATA:
 				// Process the input from existing fragment data to see if we
 				// get a complete message
+				ACE_DEBUG((LM_DEBUG,"Echo_Svc_Handler::handle_input: MUST_PROCESS_FRAGMENT_DATA\n"));
 				return process_input ();
 		}
+
+		return 0;
 	}
 
 	// receive input from the client and process it.
 	int recv_client_input (void)
 	{
-		// ...
-		return 0;
+		ACE_DEBUG((LM_DEBUG, "Echo_Svc_Handler::recv_client_input is running\n"));
+
+		if (! recv_message())
+		{
+   	        client_input_state_ = MUST_PROCESS_FRAGMENT_DATA;
+   	        return process_input();
+		}
+
+	    return 0;
 	}
 
 	// Process the input that was received from a client (either via a
@@ -254,29 +282,81 @@ public:
 	// we get a complete message
 	int process_input (void)
 	{
-		//
+		ACE_DEBUG((LM_DEBUG, "Echo_Svc_Handler::process_input\n"));
+
+		if (have_complete_message(current_fragment_))
+			return pass_to_synchronous_service_layer( current_fragment_ );
+		else
+			client_input_state_ = WAIT_TO_RECV_MORE_CLIENT_INPUT;
+
 		return 0;
 	}
 
 	// Receive the next chunk of data from the client.
 	int recv_message (void)
 	{
-		// ...
+		ACE_DEBUG((LM_DEBUG, "Echo_Svc_Handler::recv_message\n"));
+
+		char buf[ACE_DEFAULT_MAX_SOCKET_BUFSIZ];
+		ssize_t recv_cnt;
+
+	    // Read the data sent by the client into a buffer
+	    recv_cnt = this->peer().recv(buf, sizeof(buf) );
+
+	    // Evaluate the number of bytes transferred.
+	    switch (recv_cnt)
+	    {
+	    case -1:
+	    // An error occurred before the entire amount was transferred.
+	        ACE_ERROR_RETURN((LM_ERROR,
+	            "(%P|%t) %p bad read\n",
+	            "client logger"),
+	            -1);
+	        break;
+
+	    case 0:
+	    // EOF, i.e., the peer closed the connection.
+	        ACE_ERROR_RETURN((LM_ERROR,
+	            "(%P|%t) closing log daemon (fd = %d)\n",
+	            this->get_handle()),
+	            -1);
+	        break;
+	    default:
+   			buf[recv_cnt] = 0;
+   	        ACE_DEBUG((LM_DEBUG,
+   	            "Echo_Svc_Handler::recv_client_input: received from client: %s",
+   	            buf));
+
+   	        // Put data into the current_fragment_
+   			if (current_fragment_ == 0)
+   				ACE_NEW_RETURN (current_fragment_, ACE_Message_Block (ACE_DEFAULT_MAX_SOCKET_BUFSIZ), -1);
+
+   			current_fragment_->copy(buf, recv_cnt);
+	    }
+
 		return 0;
 	}
 
 	// Returns true if we have a complete message (i.e., one that is
-	//  terminated with a newline and false if we did not. If the
+	// terminated with a newline and false if we did not. If the
 	// method returns true then complete_message points to the message
 	// that was received. this method handles the fragmentation that
 	// occurs if a newline doesn't appear at the end of the client
 	bool have_complete_message (ACE_Message_Block *&complete_message)
 	{
-		//...
-		return true;
+		ACE_DEBUG((LM_DEBUG, "Echo_Svc_Handler::have_complete_message\n"));
+
+		if (current_fragment_ == 0)
+			return false;
+
+		if (! contains_endofline(current_fragment_->rd_ptr(),
+				               (ACE_OS::strlen (current_fragment_->rd_ptr ())+1)) )
+			return false;
+
+		return true; // complete message
 	}
 
-	// Calles by process_input() to pass a complete_message (i.e.,
+	// Called by process_input() to pass a complete_message (i.e.,
 	// newline-terminated) up to the Synchronous service Layer via the
 	// Queueuing Layer
 	int pass_to_synchronous_service_layer (ACE_Message_Block *complete_message)
@@ -306,7 +386,7 @@ public:
 	// Reschedule the connection timer.
 	int reschedule_timer (void)
 	{
-		// Cacnel the existing timer..
+		// Cancel the existing timer..
 		if (this->reactor () -> cancel_timer(this) == -1)
 			ACE_ERROR_RETURN((LM_ERROR,
 			                  ACE_TEXT("(%P|%t) cancel timer failed\n")),
