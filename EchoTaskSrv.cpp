@@ -54,6 +54,11 @@ public:
 	   : svc_handler_ (svc_handler)
 	{
 		// Attach the client_input on the message continuation chain.
+		this->init(ACE_DEFAULT_MAX_SOCKET_BUFSIZ);
+		this->copy(client_input->rd_ptr(), client_input->length());
+
+		client_input->release();
+
 	}
 
 	// Accessor for the service handler pointer.
@@ -66,7 +71,10 @@ public:
 	// client after first prepending the thread id.
 	virtual int execute (void)
 	{
-		//
+		ACE_DEBUG((LM_DEBUG, "Echo_Command::execute\n"));
+		//send_cnt = this->peer().send(buf, recv_cnt);
+		this->svc_handler_->peer().send(this->rd_ptr(), this->length());
+
 		return 0;
 	}
 
@@ -104,7 +112,7 @@ public:
 		// Set the high water_mark, which limits the amount of data
 		// that will be used to buffer client input pending successfully
 		// echoing back to the client.
-		ACE_OS::printf("Echo_Task::open\n");
+		ACE_DEBUG((LM_DEBUG, "Echo_Task::open\n"));
 
 		msg_queue ()-> high_water_mark (HIGH_WATER_MARK);
 
@@ -117,24 +125,31 @@ public:
 		return 0;
 	}
 
-	// This hook methos runs in each thread of control in the thread pool.
+	// This hook method runs in each thread of control in the thread pool.
 	virtual int svc (void)
 	{
+		ACE_DEBUG((LM_DEBUG, "Echo_Task::svc is running\n"));
 		// Block until there is a message available on the queue.
 		for (ACE_Message_Block *message_block; getq (message_block) != -1;)
 		{
 			// Get and execute the echo_command to echo the data back to
 			// the client
+			ACE_DEBUG((LM_DEBUG, "Echo_Task::svc: thread %ul is waiting for messages\n", ACE_OS::thr_self()));
+			Echo_Command<ACE_SOCK_Stream> *echo_command =
+					reinterpret_cast<Echo_Command<ACE_SOCK_Stream> *>( message_block );
 
-			// ...
+			echo_command->execute();
+
 		}
 		return 0;
 	}
 
 	// Enqueue the client input in the ACE_Message_Queue.
 	virtual int put (ACE_Message_Block *client_input,
-	                 ACE_Time_Value *timeout = 0)
+					 ACE_Time_Value *timeout = 0)
 	{
+		ACE_DEBUG((LM_DEBUG, "Echo_Task::put\n"));
+
 		return putq (client_input, timeout);
 	}
 };
@@ -526,6 +541,7 @@ int ACE_TMAIN (int argc, ACE_TCHAR *argv[])
     // The thread pool that plays the role of the Synchronous service
     // layer in the Half-Sync/Half-Async pattern
     ECHO_TASK echo_task;
+    echo_task.open();
 
     // Acceptor-Connector pattern
     ECHO_ACCEPTOR echo_acceptor;
